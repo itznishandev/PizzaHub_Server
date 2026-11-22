@@ -1,6 +1,7 @@
 const express = require("express");
 const { getCollections, toObjectId } = require("../config/db");
 const { verifyToken, requireRole } = require("../middleware/auth");
+const { sendOrderStatusNotification } = require("../utils/mailer");
 
 const router = express.Router();
 
@@ -231,6 +232,131 @@ router.patch(
         success: true,
         message: "Order cancelled successfully.",
         order: updatedOrder,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// GET /api/orders/vendor - List incoming orders for authenticated vendor
+router.get(
+  "/orders/vendor",
+  verifyToken,
+  requireRole("vendor"),
+  async (req, res, next) => {
+    try {
+      const { ordersCollection } = await getCollections();
+      const orders = await ordersCollection
+        .find({ vendorId: req.user.uid })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const stats = {
+        total: orders.length,
+        pending: orders.filter((o) => o.status === "pending").length,
+        accepted: orders.filter((o) => o.status === "accepted").length,
+        rejected: orders.filter((o) => o.status === "rejected").length,
+        cancelled: orders.filter((o) => o.status === "cancelled").length,
+      };
+
+      return res.status(200).json({
+        success: true,
+        orders,
+        stats,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// PATCH /api/orders/:id/status - Accept or reject a pending order once (Vendor only)
+router.patch(
+  "/orders/:id/status",
+  verifyToken,
+  requireRole("vendor"),
+  async (req, res, next) => {
+    try {
+      const orderObjectId = toObjectId(req.params.id);
+      if (!orderObjectId) {
+        return res.status(404).json({
+          success: false,
+          message: "Invalid order ID.",
+        });
+      }
+
+      const { status, note } = req.body || {};
+      if (!["accepted", "rejected"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Order status update must be either 'accepted' or 'rejected'.",
+        });
+      }
+
+      const { ordersCollection } = await getCollections();
+      const order = await ordersCollection.findOne({ _id: orderObjectId });
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found.",
+        });
+      }
+
+      if (order.vendorId !== req.user.uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden: You cannot modify orders belonging to another vendor.",
+        });
+      }
+
+      if (order.status !== "pending") {
+        return res.status(400).json({
+          success: false,
+          message: `Only pending orders can be updated. This order is already ${order.status}.`,
+        });
+      }
+
+      const now = new Date().toISOString();
+      const businessName =
+        req.user.businessName || order.businessName || `${req.user.name} Kitchen`;
+
+      const emailNotification = await sendOrderStatusNotification({
+        order,
+        newStatus: status,
+        businessName,
+      });
+
+      const historyEntry = {
+        status,
+        timestamp: now,
+        note:
+          (typeof note === "string" && note.trim()) ||
+          (status === "accepted"
+            ? `Order accepted by ${businessName}. Fresh dough is heading to the oven!`
+            : `Order declined by ${businessName}.`),
+      };
+
+      await ordersCollection.updateOne(
+        { _id: orderObjectId },
+        {
+          $set: {
+            status,
+            emailNotification,
+            updatedAt: now,
+          },
+          $push: { statusHistory: historyEntry },
+        }
+      );
+
+      const updatedOrder = await ordersCollection.findOne({ _id: orderObjectId });
+
+      return res.status(200).json({
+        success: true,
+        message: `Order ${status} and customer notified at ${order.customerEmail}.`,
+        order: updatedOrder,
+        emailNotification,
       });
     } catch (err) {
       next(err);
