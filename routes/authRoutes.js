@@ -4,8 +4,10 @@ const { getCollections, sanitizeUser, toObjectId } = require("../config/db");
 const {
   signToken,
   verifyToken,
+  requireRole,
   verifySubscriptionStatus,
 } = require("../middleware/auth");
+const { uploadImageToImgBB } = require("../utils/imgbb");
 
 const router = express.Router();
 
@@ -391,6 +393,120 @@ router.put("/auth/profile", verifyToken, async (req, res, next) => {
       message: "Profile updated successfully.",
       user: userPayload,
       token,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/logout - Clear auth cookie
+router.post("/auth/logout", (req, res) => {
+  res.clearCookie("pizzahub_token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  });
+  return res.status(200).json({ success: true, message: "Logged out." });
+});
+
+// GET /api/auth/favorites - Get customer's favorited approved menu items
+router.get(
+  "/auth/favorites",
+  verifyToken,
+  requireRole("customer"),
+  async (req, res, next) => {
+    try {
+      const favoriteIds = (req.user.favorites || [])
+        .map((id) => toObjectId(id))
+        .filter(Boolean);
+
+      if (favoriteIds.length === 0) {
+        return res.status(200).json({ success: true, items: [] });
+      }
+
+      const { menuItemsCollection } = await getCollections();
+      const items = await menuItemsCollection
+        .find({ _id: { $in: favoriteIds }, status: "approved" })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      return res.status(200).json({
+        success: true,
+        items,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// POST /api/auth/favorites/:itemId - Toggle favorite menu item for customer
+router.post(
+  "/auth/favorites/:itemId",
+  verifyToken,
+  requireRole("customer"),
+  async (req, res, next) => {
+    try {
+      const { itemId } = req.params;
+      const itemObjectId = toObjectId(itemId);
+      if (!itemObjectId) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid menu item ID.",
+        });
+      }
+
+      const { usersCollection, menuItemsCollection } = await getCollections();
+      const menuItem = await menuItemsCollection.findOne({ _id: itemObjectId });
+      if (!menuItem || menuItem.status !== "approved") {
+        return res.status(404).json({
+          success: false,
+          message: "Approved menu item not found.",
+        });
+      }
+
+      const userObjectId = toObjectId(req.user.uid);
+      const currentFavorites = Array.isArray(req.user.favorites)
+        ? req.user.favorites
+        : [];
+      const exists = currentFavorites.includes(itemId);
+
+      const updatedFavorites = exists
+        ? currentFavorites.filter((id) => id !== itemId)
+        : [...currentFavorites, itemId];
+
+      await usersCollection.updateOne(
+        { _id: userObjectId },
+        {
+          $set: {
+            favorites: updatedFavorites,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        favorited: !exists,
+        favorites: updatedFavorites,
+        message: !exists ? "Added to favorites." : "Removed from favorites.",
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// POST /api/upload/imgbb - Upload menu or profile image via ImgBB
+router.post("/upload/imgbb", verifyToken, async (req, res, next) => {
+  try {
+    const { imageData, fileName } = req.body || {};
+    const uploaded = await uploadImageToImgBB(imageData, fileName);
+
+    return res.status(200).json({
+      success: true,
+      url: uploaded.url,
+      provider: uploaded.provider,
     });
   } catch (err) {
     next(err);
