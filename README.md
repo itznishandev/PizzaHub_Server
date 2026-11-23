@@ -8,8 +8,8 @@ Backend REST API powering **PizzaHub**, a full-stack role-based pizza ordering, 
 
 - **Server Repository:** [https://github.com/itznishandev/PizzaHub_Server](https://github.com/itznishandev/PizzaHub_Server)
 - **Client Repository:** [https://github.com/itznishandev/PizzaHub_Client](https://github.com/itznishandev/PizzaHub_Client)
-- **Live Client URL:** `http://localhost:3000` (configure `CLIENT_URL` for production deployment)
-- **Live Server API:** `http://localhost:5000/api`
+- **Live Application URL:** [https://pizzahubweb.vercel.app](https://pizzahubweb.vercel.app)
+- **Live API Endpoint:** [https://pizzahubweb.vercel.app/api](https://pizzahubweb.vercel.app/api)
 
 ---
 
